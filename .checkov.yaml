@@ -1,0 +1,10 @@
+# Checkov security scanner configuration.
+# Checks that are skipped on purpose are skipped INLINE next to the resource
+# (#checkov:skip=ID:reason), so every exception has a written justification.
+framework:
+  - terraform
+compact: true
+quiet: true
+skip-path:
+  - modules/lambda_app/build
+skip-download: true

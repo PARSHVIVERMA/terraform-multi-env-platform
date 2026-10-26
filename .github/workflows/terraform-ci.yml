@@ -1,0 +1,130 @@
+# ============================================================================
+# PULL REQUEST CHECKS
+# Runs on every Pull Request to main. Nothing is changed in AWS here.
+#
+#   1. static-checks : fmt, tflint, checkov (security scan)  - no AWS access
+#   2. plan (dev)    : terraform plan with the READ-ONLY dev role
+#   3. plan (prod)   : terraform plan with the READ-ONLY prod role
+#   -> both plans are posted as a comment on the Pull Request for review
+# ============================================================================
+name: Terraform CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write       # needed to request the OIDC token for AWS
+  pull-requests: write  # needed to comment the plan on the PR
+
+concurrency:
+  group: terraform-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "1.12.2"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  static-checks:
+    name: Format, lint and security scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt (style check)
+        run: terraform fmt -check -recursive -diff
+
+      - name: Install TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint (best-practice and AWS checks)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" --format compact
+
+      - name: Checkov (security scan)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          config_file: .checkov.yaml
+
+  plan:
+    name: Plan (${{ matrix.env }})
+    needs: static-checks
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+    defaults:
+      run:
+        working-directory: envs/${{ matrix.env }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Log in to AWS with OIDC (read-only role, no keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-tfplatform-${{ matrix.env }}-plan
+          role-session-name: pr-${{ github.event.pull_request.number }}-${{ matrix.env }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform plan
+        id: plan
+        run: |
+          terraform plan -lock-timeout=5m -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Comment the plan on the Pull Request
+        uses: actions/github-script@v7
+        env:
+          ENV_NAME: ${{ matrix.env }}
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync(`envs/${process.env.ENV_NAME}/plan.txt`, 'utf8');
+            const max = 60000;
+            if (plan.length > max) plan = plan.substring(0, max) + '\n... (truncated, see the job log)';
+            const summary = (plan.match(/Plan: .*|No changes\..*/) || ['(see log)'])[0];
+            const body = [
+              `### Terraform plan: \`${process.env.ENV_NAME}\``,
+              `**${summary}**`,
+              '<details><summary>Show full plan</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '</details>',
+              '',
+              `_Run by @${context.actor} in [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

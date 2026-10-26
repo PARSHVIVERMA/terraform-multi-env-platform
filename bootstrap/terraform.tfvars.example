@@ -1,0 +1,10 @@
+# Copy this file to terraform.tfvars and fill in your own values:
+#   cp terraform.tfvars.example terraform.tfvars
+
+owner        = "your-github-username"
+github_owner = "your-github-username"
+github_repo  = "terraform-multi-env-platform"
+
+# Leave these as they are unless you know you need to change them
+project    = "tfplatform"
+aws_region = "ap-south-1"

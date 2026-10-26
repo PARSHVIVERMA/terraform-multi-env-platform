@@ -1,0 +1,104 @@
+# ============================================================================
+# DRIFT DETECTION
+# Every day at 09:00 IST, compare real AWS with the code.
+# If someone changed something by hand in the AWS console, a GitHub Issue
+# is opened automatically with the details.
+#
+# terraform plan -detailed-exitcode returns:
+#   0 = no changes   1 = error   2 = drift found
+# ============================================================================
+name: Drift Detection
+
+on:
+  schedule:
+    - cron: "30 3 * * *" # 03:30 UTC = 09:00 IST
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+env:
+  TF_VERSION: "1.12.2"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  drift:
+    name: Drift check (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+    defaults:
+      run:
+        working-directory: envs/${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Log in to AWS (read-only role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-tfplatform-${{ matrix.env }}-plan
+          role-session-name: drift-${{ matrix.env }}-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform plan -detailed-exitcode
+        id: plan
+        run: |
+          set +e
+          terraform plan -lock-timeout=5m -no-color -detailed-exitcode > drift.txt 2>&1
+          code=$?
+          set -e
+          cat drift.txt
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 1 ]; then echo "terraform plan failed"; exit 1; fi
+
+      - name: Open a GitHub Issue if drift was found
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/github-script@v7
+        env:
+          ENV_NAME: ${{ matrix.env }}
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENV_NAME;
+            const title = `Drift detected in ${env}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'drift',
+            });
+            if (open.data.some(i => i.title === title)) {
+              core.info('An open drift issue already exists; not creating another one.');
+              return;
+            }
+            let out = fs.readFileSync(`envs/${env}/drift.txt`, 'utf8');
+            if (out.length > 60000) out = out.substring(0, 60000) + '\n... (truncated)';
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['drift'],
+              body: [
+                `Someone changed **${env}** outside Terraform.`,
+                '',
+                'Fix: either revert the manual change, or update the code and open a PR.',
+                '',
+                '```hcl', out, '```',
+                '',
+                `[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              ].join('\n'),
+            });
+
+      - name: Fail the job when drift is found (so it shows red)
+        if: steps.plan.outputs.exitcode == '2'
+        run: exit 1

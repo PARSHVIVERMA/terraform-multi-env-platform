@@ -1,0 +1,160 @@
+# ============================================================================
+# DEPLOY: runs after a Pull Request is merged into main
+#
+#   deploy-dev  -> plan + apply DEV automatically, then smoke test
+#   plan-prod   -> plan PROD with the read-only role, save the plan file
+#   apply-prod  -> WAITS for a human approval (GitHub Environment "prod"),
+#                  then applies EXACTLY the plan that was reviewed
+# ============================================================================
+name: Terraform Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+# Never run two deploys at the same time.
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.12.2"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  deploy-dev:
+    name: Deploy DEV
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: envs/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Log in to AWS (dev APPLY role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-tfplatform-dev-apply
+          role-session-name: deploy-dev-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform plan
+        run: terraform plan -lock-timeout=5m -no-color -out=tfplan
+
+      - name: terraform apply
+        run: terraform apply -lock-timeout=5m -no-color tfplan
+
+      - name: Smoke test (is the app up?)
+        run: |
+          URL=$(terraform output -raw app_url)
+          echo "Testing ${URL}health"
+          curl --fail --silent --show-error --retry 6 --retry-delay 10 --retry-all-errors "${URL}health"
+          echo "### DEV is live: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+
+  plan-prod:
+    name: Plan PROD
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: envs/prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Log in to AWS (prod READ-ONLY plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-tfplatform-prod-plan
+          role-session-name: plan-prod-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform plan
+        run: |
+          terraform plan -lock-timeout=5m -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Show the plan on the run summary page (for the approver)
+        run: |
+          {
+            echo "## PROD plan - review before approving"
+            echo '```hcl'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the plan file for the apply job
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-tfplan
+          path: |
+            envs/prod/tfplan
+            modules/lambda_app/build/
+          retention-days: 3
+          if-no-files-found: error
+
+  apply-prod:
+    name: Apply PROD (needs approval)
+    needs: plan-prod
+    runs-on: ubuntu-latest
+    environment: prod # <- the "Required reviewers" rule on this environment pauses the job here
+    defaults:
+      run:
+        working-directory: envs/prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Download the reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-tfplan
+          path: .
+
+      - name: Log in to AWS (prod APPLY role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/gha-tfplatform-prod-apply
+          role-session-name: apply-prod-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform apply (exactly the reviewed plan)
+        run: terraform apply -lock-timeout=5m -no-color tfplan
+
+      - name: Smoke test
+        run: |
+          URL=$(terraform output -raw app_url)
+          curl --fail --silent --show-error --retry 6 --retry-delay 10 --retry-all-errors "${URL}health"
+          echo "### PROD is live: ${URL}" >> "$GITHUB_STEP_SUMMARY"
