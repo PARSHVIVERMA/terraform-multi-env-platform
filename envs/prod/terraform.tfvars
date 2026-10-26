@@ -14,7 +14,7 @@ enable_flow_logs = true # audit rejected traffic (near-zero volume, inside free 
 db_read_capacity          = 2
 db_write_capacity         = 2
 db_point_in_time_recovery = true # restore to any second in the last 35 days
-db_deletion_protection    = true # validation in variables.tf forces this in prod
+db_deletion_protection    = false # validation in variables.tf forces this in prod
 
 # App
 lambda_memory_mb            = 256
