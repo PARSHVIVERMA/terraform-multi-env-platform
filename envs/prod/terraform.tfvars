@@ -3,7 +3,7 @@
 # ============================================================================
 environment = "prod"
 owner       = "PARSHVIVERMA" # <-- change me
-app_version = "1.0.0"
+app_version = "1.1.0"
 
 # Network (different CIDR from dev so they never overlap)
 vpc_cidr         = "10.20.0.0/16"
