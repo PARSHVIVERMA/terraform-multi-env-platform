@@ -250,3 +250,10 @@ git push origin main
 - GitHub Actions pinned to commit SHAs, plus Dependabot for actions and providers
 - Policy as code (OPA/Conftest) and cost estimation (Infracost) in pull requests
 - CloudFront + WAF in front of the app, custom domain with ACM
+## Lessons learned
+
+**GitHub OIDC immutable subject claims.** The first deploy failed with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, even though the repo name, trust policy and OIDC audience all matched. CloudTrail's `AssumeRoleWithWebIdentity` event showed the real token subject: `repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:dev`. GitHub was sending the immutable, ID-based format. I updated the bootstrap so the roles trust the ID-based subject (pinned to this repo's numeric IDs) alongside the classic one. That is also more secure, because IDs can't be re-registered the way names can.
+
+**Formatting is a gate too.** Changing `true` to `false` in a tfvars file shifted comment alignment, and `terraform fmt -check` blocked the PR before plan. I now run `terraform fmt -recursive` before every commit.
+
+**Test the guardrails, don't just claim them.** I verified each control: a variable validation blocks disabling prod deletion protection, the IAM Policy Simulator shows an explicit deny for dev on prod state, DynamoDB refuses to delete the prod table, and drift detection opened an issue for a manual console change.
