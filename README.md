@@ -204,7 +204,6 @@ A **Cost guard** CloudWatch alarm emails you if the app gets more than 1,000 req
 ├── .checkov.yaml
 └── docs/
     ├── STEP-BY-STEP-GUIDE.md   # build it yourself from zero
-    ├── INTERVIEW-PREP.md       # how to present it + follow-up Q&A
     └── screenshots/
 ```
 
@@ -212,7 +211,7 @@ A **Cost guard** CloudWatch alarm emails you if the app gets more than 1,000 req
 
 ## Getting started
 
-Follow **[docs/STEP-BY-STEP-GUIDE.md](docs/STEP-BY-STEP-GUIDE.md)**. It assumes no prior experience and covers every command, every click, and which screenshot to take at each step.
+Follow **[docs/STEP-BY-STEP-GUIDE.md](docs/STEP-BY-STEP-GUIDE.md)**. It covers prerequisites, bootstrap, CI/CD setup, guardrail tests and teardown.
 
 Short version:
 
