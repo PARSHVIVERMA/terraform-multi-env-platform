@@ -36,6 +36,28 @@ variable "github_repo" {
   type        = string
 }
 
+variable "github_owner_id" {
+  description = "Numeric ID of the GitHub owner. Needed when GitHub sends the immutable format repo:OWNER@ID/REPO@ID. Find it with: curl -s https://api.github.com/users/OWNER"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^[0-9]*$", var.github_owner_id))
+    error_message = "github_owner_id must contain only digits."
+  }
+}
+
+variable "github_repo_id" {
+  description = "Numeric ID of the GitHub repository. Find it with: curl -s https://api.github.com/repos/OWNER/REPO"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^[0-9]*$", var.github_repo_id))
+    error_message = "github_repo_id must contain only digits."
+  }
+}
+
 variable "create_github_oidc_provider" {
   description = "Set to false if this AWS account already has the GitHub OIDC provider (only one is allowed per account)."
   type        = bool

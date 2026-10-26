@@ -21,6 +21,17 @@ locals {
   envs       = toset(var.environments)
   repo       = "${var.github_owner}/${var.github_repo}"
 
+  # GitHub can send the repo identity in two formats, so the roles trust both:
+  #   classic:   repo:OWNER/REPO
+  #   immutable: repo:OWNER@OWNER_ID/REPO@REPO_ID  (IDs never change, which
+  #              stops a re-created account or repo with the same name getting in)
+  subject_prefixes = concat(
+    ["repo:${local.repo}"],
+    var.github_owner_id != "" && var.github_repo_id != "" ? [
+      "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}",
+    ] : [],
+  )
+
   state_bucket_name = { for env in local.envs : env => "${var.project}-tfstate-${env}-${local.account_id}" }
 
   oidc_provider_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
@@ -195,10 +206,12 @@ data "aws_iam_policy_document" "plan_trust" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
 
-      values = [
-        "repo:${local.repo}:pull_request",
-        "repo:${local.repo}:ref:refs/heads/main",
-      ]
+      values = flatten([
+        for prefix in local.subject_prefixes : [
+          "${prefix}:pull_request",
+          "${prefix}:ref:refs/heads/main",
+        ]
+      ])
     }
   }
 }
@@ -279,7 +292,7 @@ data "aws_iam_policy_document" "apply_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.repo}:environment:${each.key}"]
+      values   = [for prefix in local.subject_prefixes : "${prefix}:environment:${each.key}"]
     }
   }
 }
